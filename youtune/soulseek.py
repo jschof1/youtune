@@ -59,9 +59,9 @@ async def _search_and_download(
             return None
 
         candidates.sort(key=lambda x: x[0], reverse=True)
-        _, best_result, best_file = candidates[0]
+        best_score, best_result, best_file = candidates[0]
 
-        log.info("Soulseek upgrade: %s (%d kbps) from %s", best_file.filename, _score, best_result.username)
+        log.info("Soulseek upgrade: %s (%d kbps) from %s", best_file.filename, best_score, best_result.username)
         download_path = output_dir / Path(best_file.filename).name
         await client.download(best_result.username, best_file.filename, str(download_path))
         await client.stop()
