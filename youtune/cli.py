@@ -131,7 +131,14 @@ def _process_track(filepath: Path, video_title: str, args) -> bool:
 def cmd_download(args):
     """Handle single URL or playlist download."""
     url = args.url
-    output_dir = Path(args.output)
+    output_dir = Path(args.output).expanduser().resolve()
+
+    # Make sure we can write to the output directory
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        console.print(f"\n[bold red]Error:[/] Cannot write to {output_dir}\n[dim]Specify a writable directory with -o, e.g. youtune URL -o ~/Music[/]")
+        sys.exit(1)
 
     console.print()
     console.print(Panel(
@@ -214,7 +221,7 @@ examples:
     # ── download ──
     dl = sub.add_parser("download", help="Download & tag a YouTube URL")
     dl.add_argument("url", help="YouTube video or playlist URL")
-    dl.add_argument("-o", "--output", default=".", help="Output directory (default: .)")
+    dl.add_argument("-o", "--output", default="~/Downloads", help="Output directory (default: ~/Downloads)")
     dl.add_argument("-q", "--quality", type=int, default=0, help="Audio quality 0 (best) – 9 (worst)")
     dl.add_argument("--normalize", action="store_true", help="Apply EBU R128 loudness normalization")
     dl.add_argument("--lyrics", action="store_true", help="Fetch & embed lyrics")
