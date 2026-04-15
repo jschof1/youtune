@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtune"
+version = "1.0.0"
+description = "The smartest YouTube → MP3 downloader. Auto-tags with MusicBrainz, embeds album art, fetches lyrics, upgrades quality via Soulseek."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [{name = "Jack Schofield"}]
+keywords = [
+    "youtube", "mp3", "downloader", "music", "tagging", "soulseek",
+    "metadata", "musicbrainz", "album-art", "lyrics", "audio",
+    "yt-dlp", "id3", "cover-art", "normalize",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Multimedia :: Sound/Audio :: Editors",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "yt-dlp>=2024.1.0",
+    "mutagen>=1.47.0",
+    "musicbrainzngs>=0.7.1",
+    "requests>=2.31.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+soulseek = ["aioslsk>=1.5.0"]
+fingerprint = ["pyacoustid>=0.4"]
+dev = ["pytest>=7.0", "pytest-mock>=3.0", "build>=1.0", "twine>=5.0"]
+
+[project.scripts]
+youtune = "youtune.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jschof1/youtune"
+Repository = "https://github.com/jschof1/youtune"
+Issues = "https://github.com/jschof1/youtune/issues"
+Changelog = "https://github.com/jschof1/youtune/releases"
+
+[tool.setuptools.packages.find]
+include = ["youtune*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
