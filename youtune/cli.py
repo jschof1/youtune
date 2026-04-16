@@ -389,18 +389,18 @@ examples:
     sr.add_argument("title", help='Video title (e.g. "Rick Astley - Never Gonna Give You Up")')
     sr.add_argument("--no-tag", action="store_true")
 
+    # Detect bare URL before argparse rejects it as an invalid subcommand
+    # If first arg looks like a URL and isn't a known subcommand, inject "download"
+    known_commands = {"login", "status", "download", "search"}
+    if len(sys.argv) > 1 and sys.argv[1] not in known_commands and not sys.argv[1].startswith("-"):
+        sys.argv.insert(1, "download")
+
     args = parser.parse_args()
     _setup_logging(args.verbose)
 
-    # Allow bare URL without "download" subcommand
     if not args.command:
-        if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
-            sys.argv.insert(1, "download")
-            args = parser.parse_args()
-            _setup_logging(args.verbose)
-        else:
-            parser.print_help()
-            sys.exit(0)
+        parser.print_help()
+        sys.exit(0)
 
     try:
         if args.command == "login":
