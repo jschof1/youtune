@@ -94,7 +94,7 @@ async def _search_and_download(
         await client.start()
         log.info("Logged into Soulseek as %s", username)
 
-        search_request = await client.search_manager.search(query)
+        search_request = await client.searches.search(query)
 
         # Give search a few seconds to collect results
         await asyncio.sleep(5)
@@ -134,7 +134,7 @@ async def _search_and_download(
 
         download_path = output_dir / Path(best_file.filename).name
 
-        transfer = await client.transfer_manager.download(
+        transfer = await client.transfers.download(
             username=best_user,
             filename=best_file.filename,
         )
