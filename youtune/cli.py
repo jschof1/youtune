@@ -88,8 +88,12 @@ def cmd_login(args):
     else:
         console.print(f"  ❌ [red]Login failed:[/] {msg}")
         console.print()
-        console.print("  [dim]Check your username and password at https://www.slsknet.org/[/]")
-        console.print(f"  [dim]Run [bold]youtune login[/] to try again.[/]")
+        if "aioslsk" in msg:
+            console.print("  [dim]Install Soulseek support:[/]")
+            console.print("  [bold]pip install 'youtune[soulseek]'[/]")
+        else:
+            console.print("  [dim]Check your username and password at https://www.slsknet.org/[/]")
+            console.print(f"  [dim]Run [bold]youtune login[/] to try again.[/]")
         sys.exit(1)
 
     console.print()

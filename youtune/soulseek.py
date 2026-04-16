@@ -10,8 +10,7 @@ from .parser import ParsedTitle
 log = logging.getLogger(__name__)
 
 
-def _check_aioslsk():
-    """Check if aioslsk is available."""
+def _check_aioslsk() -> bool:
     try:
         import aioslsk  # noqa: F401
         return True
@@ -20,28 +19,28 @@ def _check_aioslsk():
 
 
 async def _test_login(username: str, password: str) -> tuple[bool, str]:
-    """
-    Test Soulseek login credentials.
-    Returns (success, message).
-    """
+    """Test Soulseek login credentials. Returns (success, message)."""
     if not _check_aioslsk():
-        return False, "Install Soulseek support: pip install youtune[soulseek]"
+        return False, "aioslsk not installed. Run: pip install 'youtune[soulseek]'"
 
     try:
-        from aioslsk.client import SoulseekClient
+        from aioslsk.client import SoulSeekClient, Settings
+        from aioslsk.settings import CredentialsSettings, NetworkSettings
 
-        client = SoulseekClient()
-        await client.start()
-        await client.login(username, password)
+        settings = Settings(
+            credentials=CredentialsSettings(username=username, password=password),
+        )
+        client = SoulSeekClient(settings=settings)
+        await client.start()  # connects + logs in
         await client.stop()
         return True, f"Connected as {username}"
     except Exception as e:
         error_msg = str(e).lower()
-        if "invalid" in error_msg or "bad" in error_msg or "password" in error_msg:
+        if "invalid" in error_msg or "bad" in error_msg or "password" in error_msg or "auth" in error_msg:
             return False, "Invalid username or password"
         if "ban" in error_msg:
             return False, "Account is banned"
-        if "connect" in error_msg or "timeout" in error_msg:
+        if "connect" in error_msg or "timeout" in error_msg or "refused" in error_msg:
             return False, "Cannot reach Soulseek server — check your internet connection"
         return False, f"Connection failed: {e}"
 
@@ -52,6 +51,21 @@ def test_soulseek_login(username: str, password: str) -> tuple[bool, str]:
         return asyncio.run(_test_login(username, password))
     except Exception as e:
         return False, f"Error: {e}"
+
+
+def _get_bitrate(file_data) -> int:
+    """Extract bitrate from a FileData's attributes."""
+    try:
+        for attr in file_data.attributes:
+            # Attribute has .name and .value — bitrate attribute
+            if hasattr(attr, 'name') and 'bitrate' in str(attr.name).lower():
+                return int(attr.value) if attr.value else 0
+            # Some versions just use numeric attribute type
+            if hasattr(attr, 'type') and attr.type == 0:  # bitrate
+                return int(attr.value) if attr.value else 0
+    except Exception:
+        pass
+    return 0
 
 
 async def _search_and_download(
@@ -65,50 +79,87 @@ async def _search_and_download(
 ) -> Optional[Path]:
     """Search Soulseek and download the best version. Returns path or None."""
     if not _check_aioslsk():
-        log.error(
-            "Soulseek support requires the 'soulseek' extra.\n"
-            "Install with: pip install youtune[soulseek]"
-        )
+        log.error("aioslsk not installed. Run: pip install 'youtune[soulseek]'")
         return None
 
     query = f"{artist} {title}"
     try:
-        from aioslsk.client import SoulseekClient
+        from aioslsk.client import SoulSeekClient, Settings
+        from aioslsk.settings import CredentialsSettings
 
-        client = SoulseekClient()
+        settings = Settings(
+            credentials=CredentialsSettings(username=username, password=password),
+        )
+        client = SoulSeekClient(settings=settings)
         await client.start()
-        await client.login(username, password)
         log.info("Logged into Soulseek as %s", username)
 
-        results = await client.search(query)
+        search_request = await client.search_manager.search(query)
+
+        # Give search a few seconds to collect results
+        await asyncio.sleep(5)
+
+        results = search_request.results
         if not results:
             log.info("No Soulseek results for: %s", query)
+            await client.stop()
             return None
 
         candidates = []
         for result in results:
-            for file in result.files:
-                fn = file.filename.lower()
-                if not any(fn.endswith(ext) for ext in [".mp3", ".flac"]):
+            for item in result.shared_items:
+                fn = item.filename.lower()
+                ext = item.extension.lower() if item.extension else ""
+                if ext not in [".mp3", ".flac"]:
                     continue
-                score = file.bitrate or 0
-                if fn.endswith(".flac") and prefer_flac:
+                bitrate = _get_bitrate(item)
+                score = bitrate
+                if ext == ".flac" and prefer_flac:
                     score += 500
                 if score >= min_bitrate:
-                    candidates.append((score, result, file))
+                    candidates.append((score, result.username, item))
 
         if not candidates:
             log.info("No high-quality Soulseek results for: %s", query)
+            await client.stop()
             return None
 
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best_score, best_result, best_file = candidates[0]
+        best_score, best_user, best_file = candidates[0]
 
-        log.info("Soulseek upgrade: %s (%d kbps) from %s", best_file.filename, best_score, best_result.username)
+        log.info(
+            "Soulseek upgrade: %s (%d) from %s",
+            best_file.filename, best_score, best_user,
+        )
+
         download_path = output_dir / Path(best_file.filename).name
-        await client.download(best_result.username, best_file.filename, str(download_path))
+
+        transfer = await client.transfer_manager.download(
+            username=best_user,
+            filename=best_file.filename,
+        )
+
+        # Wait for download to complete (with timeout)
+        for _ in range(300):  # max 5 minutes
+            await asyncio.sleep(1)
+            if transfer.is_complete():
+                break
+
         await client.stop()
-        return download_path
+
+        # The transfer saves to Soulseek's download dir — check if it exists
+        # aioslsk puts downloads in a configured directory
+        if download_path.exists():
+            return download_path
+
+        # Try to find the file in the transfer
+        if hasattr(transfer, 'local_path') and transfer.local_path:
+            actual = Path(transfer.local_path)
+            if actual.exists():
+                return actual
+
+        log.warning("Download completed but file not found at expected path")
+        return None
 
     except Exception as e:
         log.warning("Soulseek download failed: %s", e)
