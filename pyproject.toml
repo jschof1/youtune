@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "youtune"
-version = "1.2.0"
+version = "1.2.1"
 description = "The smartest YouTube → MP3 downloader. Auto-tags with MusicBrainz, embeds album art, fetches lyrics, upgrades quality via Soulseek."
 readme = "README.md"
 license = {text = "MIT"}

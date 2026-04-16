@@ -33,19 +33,36 @@ def _get_bitrate(file_data) -> int:
     return 0
 
 
-def _clean_query(artist: str, title: str) -> str:
-    """
-    Clean a search query for Soulseek.
-    Strip punctuation that hurts matching (apostrophes, special chars).
-    """
-    q = f"{artist} {title}"
+def _clean_query(text: str) -> str:
+    """Strip punctuation that hurts Soulseek matching."""
     # Remove apostrophes (I'll -> Ill, Don't -> Dont)
-    q = q.replace("'", "")
-    # Remove other punctuation that hurts search
-    q = re.sub(r'[^\w\s]', ' ', q)
-    # Collapse whitespace
-    q = re.sub(r'\s+', ' ', q).strip()
-    return q
+    text = text.replace("'", "")
+    # Remove other problematic punctuation
+    text = re.sub(r'[^\w\s]', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _build_queries(artist: str, title: str) -> list[str]:
+    """
+    Build multiple search queries to maximize match probability.
+    Soulseek users name files inconsistently, so try variations.
+    """
+    clean_artist = _clean_query(artist)
+    clean_title = _clean_query(title)
+    queries = []
+
+    # Full query: artist + title
+    if clean_artist:
+        queries.append(f"{clean_artist} {clean_title}")
+
+    # Just the title (some users file under compilations)
+    queries.append(clean_title)
+
+    # Artist - Title (common naming convention)
+    if clean_artist:
+        queries.append(f"{clean_artist} - {clean_title}")
+
+    return queries
 
 
 async def _test_login(username: str, password: str) -> tuple[bool, str]:
@@ -83,6 +100,26 @@ def test_soulseek_login(username: str, password: str) -> tuple[bool, str]:
         return False, f"Error: {e}"
 
 
+async def _do_search(client, query: str, wait_seconds: int = 15) -> list:
+    """Execute a single search and wait for results."""
+    log.info("Soulseek query: %s", query)
+    search_request = await client.searches.search(query)
+
+    for i in range(wait_seconds):
+        await asyncio.sleep(1)
+        n_results = len(search_request.results)
+        n_files = sum(len(r.shared_items) for r in search_request.results)
+        if n_files > 0:
+            log.info("Soulseek: %d results, %d files after %ds", n_results, n_files, i + 1)
+            # Give it a bit more time to accumulate once we start seeing results
+            await asyncio.sleep(5)
+            break
+        if (i + 1) % 5 == 0:
+            log.info("Soulseek: 0 results after %ds...", i + 1)
+
+    return search_request.results
+
+
 async def _search_and_download(
     artist: str,
     title: str,
@@ -97,9 +134,6 @@ async def _search_and_download(
         log.error("aioslsk not installed. Run: pip install 'youtune[soulseek]'")
         return None
 
-    query = _clean_query(artist, title)
-    log.info("Soulseek query: %s", query)
-
     try:
         from aioslsk.client import SoulSeekClient, Settings
         from aioslsk.settings import CredentialsSettings
@@ -111,37 +145,27 @@ async def _search_and_download(
         await client.start()
         log.info("Logged into Soulseek as %s", username)
 
-        search_request = await client.searches.search(query)
+        # Try multiple query variations until we find results
+        queries = _build_queries(artist, title)
+        all_results = []
 
-        # Wait for results to accumulate from the P2P network.
-        # Soulseek is distributed — results trickle in over time.
-        # Check periodically and stop early if we have enough.
-        max_wait = 20  # seconds total
-        check_interval = 2
-        elapsed = 0
+        for query in queries:
+            results = await _do_search(client, query, wait_seconds=12)
+            if results:
+                all_results.extend(results)
+                log.info("Found %d results with query: %s", len(results), query)
+                break  # stop searching once we get hits
+            log.info("No results for: %s", query)
 
-        while elapsed < max_wait:
-            await asyncio.sleep(check_interval)
-            elapsed += check_interval
-            num_results = len(search_request.results)
-            total_files = sum(len(r.shared_items) for r in search_request.results)
-            log.info("Soulseek: %d results, %d files after %ds", num_results, total_files, elapsed)
-
-            # Stop waiting once we have a decent amount of results
-            if total_files >= 5 or elapsed >= 10:
-                break
-
-        results = search_request.results
-        if not results:
-            log.info("No Soulseek results for: %s", query)
+        if not all_results:
+            log.info("No Soulseek results found for any query variation")
             await client.stop()
             return None
 
         # Collect and rank all audio files
         candidates = []
-        for result in results:
+        for result in all_results:
             for item in result.shared_items:
-                fn = (item.filename or "").lower()
                 ext = (item.extension or "").lower()
                 if ext not in [".mp3", ".flac"]:
                     continue
@@ -149,18 +173,29 @@ async def _search_and_download(
                 score = bitrate
                 if ext == ".flac" and prefer_flac:
                     score += 500
-                # Prefer users with free slots and fast speed
                 if result.has_free_slots:
                     score += 50
-                score += min(result.avg_speed // 100, 50)  # small bonus for speed
+                score += min(result.avg_speed // 100, 50)
                 if score >= min_bitrate:
                     candidates.append((score, result.username, item, bitrate))
 
         if not candidates:
-            log.info("No high-quality Soulseek results for: %s (found %d files but none >= %dkbps)",
-                      query, sum(len(r.shared_items) for r in results), min_bitrate)
-            await client.stop()
-            return None
+            # Lower the bar: try any audio file regardless of bitrate
+            for result in all_results:
+                for item in result.shared_items:
+                    ext = (item.extension or "").lower()
+                    if ext not in [".mp3", ".flac", ".m4a", ".ogg", ".wav"]:
+                        continue
+                    bitrate = _get_bitrate(item)
+                    score = bitrate or 128
+                    if ext == ".flac":
+                        score += 500
+                    candidates.append((score, result.username, item, bitrate))
+
+            if not candidates:
+                log.info("No audio files found in Soulseek results")
+                await client.stop()
+                return None
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         best_score, best_user, best_file, best_bitrate = candidates[0]
@@ -175,34 +210,34 @@ async def _search_and_download(
             filename=best_file.filename,
         )
 
-        # Wait for download to complete (with timeout)
-        for _ in range(300):  # max 5 minutes
+        # Wait for download to complete (max 5 minutes)
+        for _ in range(300):
             await asyncio.sleep(1)
-            # Check transfer state
             if hasattr(transfer, 'is_complete') and callable(transfer.is_complete):
                 if transfer.is_complete():
                     break
             elif hasattr(transfer, 'state'):
-                from aioslsk.transfer.model import TransferState
-                if transfer.state in (TransferState.COMPLETE, TransferState.UPLOADED, TransferState.DOWNLOADED):
-                    break
+                try:
+                    from aioslsk.transfer.model import TransferState
+                    if transfer.state in (TransferState.COMPLETE, TransferState.UPLOADED, TransferState.DOWNLOADED):
+                        break
+                except ImportError:
+                    pass
 
         await client.stop()
 
-        # Find where the file was saved
-        # aioslsk saves to a downloads directory — try to locate it
+        # Locate the downloaded file
         download_name = Path(best_file.filename).name
 
-        # Check if transfer has a local_path attribute
         if hasattr(transfer, 'local_path') and transfer.local_path:
             actual = Path(transfer.local_path)
             if actual.exists():
                 return actual
 
         # Search common download locations
-        import os
         search_dirs = [
             Path.home() / "Soulseek Downloads",
+            Path.home() / "Downloads" / "Soulseek",
             Path.home() / "Downloads",
             Path.home() / ".aioslsk" / "downloads",
         ]

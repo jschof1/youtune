@@ -145,6 +145,9 @@ def cmd_status(args):
 
         if ok:
             console.print(f"  🔗 [green]Soulseek: Connected as {slsk_user}[/]")
+            console.print()
+            console.print("  [dim]⚠️  If searches return 0 results, your Soulseek listening port may be closed.[/]")
+            console.print("  [dim]   Check https://www.slsknet.org/portcheck.php and forward ports on your router.[/]")
         else:
             console.print(f"  🔗 [red]Soulseek: {msg}[/]")
             console.print(f"     [dim]Run [bold]youtune login[/] to update your credentials.[/]")
