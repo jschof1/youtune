@@ -8,12 +8,14 @@ from pathlib import Path
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
+from rich.prompt import Prompt
 from rich.table import Table
 
 from . import __version__
+from .config import load_config, save_config, get_soulseek_creds, CONFIG_FILE
 from .downloader import download, download_playlist
 from .parser import parse_title
-from .soulseek import soulseek_upgrade
+from .soulseek import soulseek_upgrade, test_soulseek_login
 from .tagger import TrackMetadata, search_recording, fetch_cover_art, fetch_lyrics
 from .utils import sanitize_filename, format_filename
 from .writer import apply_metadata, embed_cover_art
@@ -29,6 +31,132 @@ def _setup_logging(verbose: bool):
         handlers=[RichHandler(console=console, show_time=False, show_path=False)],
     )
     logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
+
+
+# ─── login ────────────────────────────────────────────────────────────────────
+
+def cmd_login(args):
+    """Interactive first-time setup: save Soulseek credentials."""
+    console.print()
+    console.print(Panel(
+        "[bold]youtune login[/]\n[dim]Connect your Soulseek account for quality upgrades[/]",
+        border_style="bright_blue",
+        padding=(0, 2),
+    ))
+    console.print()
+    console.print("  Soulseek is a P2P network where people share FLAC & 320kbps music.")
+    console.print("  youtune can search it for higher-quality versions of your downloads.")
+    console.print()
+    console.print("  [dim]Don't have an account? Create one at https://www.soulseekqt.net/[/]")
+    console.print()
+
+    config = load_config()
+
+    # Show current value as default
+    current_user = config.get("soulseek_user", "")
+    default_hint = f" [dim](current: {current_user})[/]" if current_user else ""
+
+    username = Prompt.ask(
+        f"  [cyan]Soulseek username[/]{default_hint}",
+        default=current_user or None,
+    )
+    password = Prompt.ask(
+        f"  [cyan]Soulseek password[/]",
+        password=True,
+    )
+
+    if not username or not password:
+        console.print("\n  [red]Username and password are required.[/]")
+        sys.exit(1)
+
+    config["soulseek_user"] = username
+    config["soulseek_pass"] = password
+
+    console.print()
+    with console.status("[bold green]Testing connection..."):
+        ok, msg = test_soulseek_login(username, password)
+
+    if ok:
+        save_config(config)
+        console.print(f"  ✅ [bold green]Connected![/] Logged into Soulseek as [cyan]{username}[/]")
+        console.print(f"  📁 Config saved to [dim]{CONFIG_FILE}[/]")
+        console.print()
+        console.print("  Now run:")
+        console.print(f"    [bold]youtune[/] \"https://youtube.com/watch?v=...\" [cyan]--soulseek[/]")
+        console.print()
+        console.print("  [dim]Your credentials are saved. You won't need to pass --soulseek-user/pass again.[/]")
+    else:
+        console.print(f"  ❌ [red]Login failed:[/] {msg}")
+        console.print()
+        console.print("  [dim]Check your username and password at https://www.slsknet.org/[/]")
+        console.print(f"  [dim]Run [bold]youtune login[/] to try again.[/]")
+        sys.exit(1)
+
+    console.print()
+
+
+# ─── status ───────────────────────────────────────────────────────────────────
+
+def cmd_status(args):
+    """Show current config and connection status."""
+    console.print()
+    console.print(Panel(
+        f"[bold]youtune[/] [dim]v{__version__}[/] — Status",
+        border_style="bright_blue",
+        padding=(0, 2),
+    ))
+    console.print()
+
+    config = load_config()
+
+    table = Table(show_header=True, header_style="bold cyan", grid=True)
+    table.add_column("Setting")
+    table.add_column("Value")
+
+    # Config values
+    slsk_user = config.get("soulseek_user", "")
+    output_dir = config.get("output_dir", "~/Downloads")
+    quality = config.get("quality", 0)
+    normalize = config.get("normalize", False)
+    lyrics = config.get("lyrics", False)
+
+    table.add_row("Config file", str(CONFIG_FILE))
+    table.add_row("Default output", output_dir)
+    table.add_row("Default quality", str(quality))
+    table.add_row("Normalize", "✅ on" if normalize else "off")
+    table.add_row("Lyrics", "✅ on" if lyrics else "off")
+
+    if slsk_user:
+        table.add_row("Soulseek user", slsk_user)
+    else:
+        table.add_row("Soulseek", "[yellow]not configured — run [bold]youtune login[/][/]")
+
+    console.print(table)
+
+    # Test Soulseek connection if we have creds
+    if slsk_user and config.get("soulseek_pass"):
+        console.print()
+        with console.status("[bold green]Testing Soulseek connection..."):
+            ok, msg = test_soulseek_login(slsk_user, config["soulseek_pass"])
+
+        if ok:
+            console.print(f"  🔗 [green]Soulseek: Connected as {slsk_user}[/]")
+        else:
+            console.print(f"  🔗 [red]Soulseek: {msg}[/]")
+            console.print(f"     [dim]Run [bold]youtune login[/] to update your credentials.[/]")
+
+    console.print()
+
+
+# ─── download ─────────────────────────────────────────────────────────────────
+
+def _resolve_soulseek_creds(args) -> tuple:
+    """Resolve Soulseek credentials: CLI flags > saved config."""
+    config = load_config()
+
+    user = getattr(args, "soulseek_user", None) or config.get("soulseek_user", "")
+    pas = getattr(args, "soulseek_pass", None) or config.get("soulseek_pass", "")
+    return user, pas
 
 
 def _process_track(filepath: Path, video_title: str, args) -> bool:
@@ -104,16 +232,21 @@ def _process_track(filepath: Path, video_title: str, args) -> bool:
 
     # 8. Soulseek upgrade
     if args.soulseek:
-        if not args.soulseek_user or not args.soulseek_pass:
-            console.print("  ⚠️  [yellow]Soulseek requires --soulseek-user and --soulseek-pass[/]")
+        slsk_user, slsk_pass = _resolve_soulseek_creds(args)
+
+        if not slsk_user or not slsk_pass:
+            console.print()
+            console.print("  ⚠️  [yellow]Soulseek not configured.[/]")
+            console.print("     Run [bold]youtune login[/] to connect your Soulseek account.")
+            console.print("     Or pass [cyan]--soulseek-user[/] and [cyan]--soulseek-pass[/] flags.")
         else:
             console.print()
-            with console.status("[bold green]Searching Soulseek for better quality..."):
+            with console.status(f"[bold green]Searching Soulseek as {slsk_user}..."):
                 upgraded = soulseek_upgrade(
                     parsed=parsed,
                     output_dir=filepath.parent,
-                    username=args.soulseek_user,
-                    password=args.soulseek_pass,
+                    username=slsk_user,
+                    password=slsk_pass,
                     prefer_flac=args.prefer_flac,
                     min_bitrate=args.min_bitrate,
                 )
@@ -133,7 +266,6 @@ def cmd_download(args):
     url = args.url
     output_dir = Path(args.output).expanduser().resolve()
 
-    # Make sure we can write to the output directory
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError:
@@ -167,6 +299,8 @@ def cmd_download(args):
     console.print("[bold green]✨ Done![/]")
 
 
+# ─── search ───────────────────────────────────────────────────────────────────
+
 def cmd_search(args):
     """Preview metadata lookup (dry run)."""
     parsed = parse_title(args.title)
@@ -199,6 +333,8 @@ def cmd_search(args):
             console.print("\n[yellow]No MusicBrainz match found.[/]")
 
 
+# ─── main ─────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(
         prog="youtune",
@@ -208,15 +344,22 @@ def main():
 examples:
   youtune "https://youtube.com/watch?v=dQw4w9WgXcQ"
   youtune "https://youtube.com/watch?v=..." -o ~/Music --lyrics
-  youtune "https://youtube.com/playlist?list=..." --normalize
+  youtune "https://youtube.com/playlist?list=..." --normalize --soulseek
   youtune search "Rick Astley - Never Gonna Give You Up"
-  youtune "https://youtube.com/watch?v=..." --soulseek --soulseek-user me --soulseek-pass x
+  youtune login          # connect your Soulseek account
+  youtune status         # check connection & settings
 """,
     )
     parser.add_argument("--version", action="version", version=f"youtune {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="Debug output")
 
     sub = parser.add_subparsers(dest="command")
+
+    # ── login ──
+    sub.add_parser("login", help="Connect your Soulseek account")
+
+    # ── status ──
+    sub.add_parser("status", help="Show connection status & settings")
 
     # ── download ──
     dl = sub.add_parser("download", help="Download & tag a YouTube URL")
@@ -231,8 +374,8 @@ examples:
 
     g = dl.add_argument_group("Soulseek upgrade")
     g.add_argument("--soulseek", action="store_true", help="Search Soulseek for better quality")
-    g.add_argument("--soulseek-user", help="Soulseek username")
-    g.add_argument("--soulseek-pass", help="Soulseek password")
+    g.add_argument("--soulseek-user", help="Soulseek username (or run: youtune login)")
+    g.add_argument("--soulseek-pass", help="Soulseek password (or run: youtune login)")
     g.add_argument("--prefer-flac", action="store_true", default=True, help="Prefer FLAC from Soulseek")
     g.add_argument("--min-bitrate", type=int, default=256, help="Min Soulseek bitrate (default: 256)")
     g.add_argument("--keep-youtube", action="store_true", help="Keep YouTube file on Soulseek upgrade")
@@ -256,7 +399,11 @@ examples:
             sys.exit(0)
 
     try:
-        if args.command == "download":
+        if args.command == "login":
+            cmd_login(args)
+        elif args.command == "status":
+            cmd_status(args)
+        elif args.command == "download":
             cmd_download(args)
         elif args.command == "search":
             cmd_search(args)

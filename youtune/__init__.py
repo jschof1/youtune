@@ -1,3 +1,3 @@
 """youtune — The smartest YouTube → MP3 downloader."""
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"

@@ -10,6 +10,50 @@ from .parser import ParsedTitle
 log = logging.getLogger(__name__)
 
 
+def _check_aioslsk():
+    """Check if aioslsk is available."""
+    try:
+        import aioslsk  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+async def _test_login(username: str, password: str) -> tuple[bool, str]:
+    """
+    Test Soulseek login credentials.
+    Returns (success, message).
+    """
+    if not _check_aioslsk():
+        return False, "Install Soulseek support: pip install youtune[soulseek]"
+
+    try:
+        from aioslsk.client import SoulseekClient
+
+        client = SoulseekClient()
+        await client.start()
+        await client.login(username, password)
+        await client.stop()
+        return True, f"Connected as {username}"
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "invalid" in error_msg or "bad" in error_msg or "password" in error_msg:
+            return False, "Invalid username or password"
+        if "ban" in error_msg:
+            return False, "Account is banned"
+        if "connect" in error_msg or "timeout" in error_msg:
+            return False, "Cannot reach Soulseek server — check your internet connection"
+        return False, f"Connection failed: {e}"
+
+
+def test_soulseek_login(username: str, password: str) -> tuple[bool, str]:
+    """Sync wrapper: test Soulseek login."""
+    try:
+        return asyncio.run(_test_login(username, password))
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
 async def _search_and_download(
     artist: str,
     title: str,
@@ -20,10 +64,7 @@ async def _search_and_download(
     min_bitrate: int = 256,
 ) -> Optional[Path]:
     """Search Soulseek and download the best version. Returns path or None."""
-    try:
-        import aioslsk
-        from aioslsk.client import SoulseekClient
-    except ImportError:
+    if not _check_aioslsk():
         log.error(
             "Soulseek support requires the 'soulseek' extra.\n"
             "Install with: pip install youtune[soulseek]"
@@ -32,6 +73,8 @@ async def _search_and_download(
 
     query = f"{artist} {title}"
     try:
+        from aioslsk.client import SoulseekClient
+
         client = SoulseekClient()
         await client.start()
         await client.login(username, password)
@@ -83,7 +126,10 @@ def soulseek_upgrade(
     """Sync wrapper: search Soulseek for a better version."""
     try:
         return asyncio.run(
-            _search_and_download(parsed.artist, parsed.title, output_dir, username, password, prefer_flac, min_bitrate)
+            _search_and_download(
+                parsed.artist, parsed.title, output_dir,
+                username, password, prefer_flac, min_bitrate,
+            )
         )
     except Exception as e:
         log.warning("Soulseek upgrade failed: %s", e)
