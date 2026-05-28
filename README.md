@@ -26,7 +26,7 @@ youtune "https://youtube.com/watch?v=dQw4w9WgXcQ"
 
 ```
   ╭──────────────────────────────────╮
-  │  youtune v1.0.0                  │
+  │  youtune v1.2.2                  │
   │  The smartest YouTube → MP3 downloader │
   ╰──────────────────────────────────╯
 
@@ -76,20 +76,26 @@ youtune "https://youtube.com/watch?v=dQw4w9WgXcQ"
 pip install youtune
 ```
 
-**Prerequisites:** [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [ffmpeg](https://ffmpeg.org/) must be on your PATH:
+**Prerequisite:** [ffmpeg](https://ffmpeg.org/) must be on your PATH. `yt-dlp` is installed automatically with youtune, but installing the standalone binary is also fine.
 
 ```bash
 # macOS
-brew install yt-dlp ffmpeg
+brew install ffmpeg
 
 # Ubuntu / Debian
-sudo apt install ffmpeg && pip install yt-dlp
+sudo apt install ffmpeg
 
 # Windows (winget)
-winget install yt-dlp.yt-dlp Gyan.FFmpeg
+winget install Gyan.FFmpeg
 
 # Arch
-sudo pacman -S yt-dlp ffmpeg
+sudo pacman -S ffmpeg
+```
+
+If your system blocks global pip installs, use [pipx](https://pipx.pypa.io/):
+
+```bash
+pipx install youtune
 ```
 
 ### Optional: Soulseek support

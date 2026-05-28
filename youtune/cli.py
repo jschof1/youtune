@@ -4,6 +4,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -12,12 +13,12 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from . import __version__
-from .config import load_config, save_config, get_soulseek_creds, CONFIG_FILE
+from .config import load_config, save_config, CONFIG_FILE
 from .downloader import download, download_playlist
 from .parser import parse_title
 from .soulseek import soulseek_upgrade, test_soulseek_login
 from .tagger import TrackMetadata, search_recording, fetch_cover_art, fetch_lyrics
-from .utils import sanitize_filename, format_filename
+from .utils import format_filename
 from .writer import apply_metadata, embed_cover_art
 
 console = Console()
@@ -31,6 +32,47 @@ def _setup_logging(verbose: bool):
         handlers=[RichHandler(console=console, show_time=False, show_path=False)],
     )
     logging.getLogger("musicbrainzngs").setLevel(logging.WARNING)
+
+
+def _quality(value: str) -> int:
+    try:
+        quality = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer from 0 to 9") from exc
+    if not 0 <= quality <= 9:
+        raise argparse.ArgumentTypeError("must be between 0 (best) and 9 (worst)")
+    return quality
+
+
+def _min_bitrate(value: str) -> int:
+    try:
+        bitrate = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if bitrate < 0:
+        raise argparse.ArgumentTypeError("must be 0 or greater")
+    return bitrate
+
+
+def _looks_like_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_playlist_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return bool(parse_qs(parsed.query).get("list"))
+
+
+def _default_output(config: dict) -> str:
+    return str(config.get("output_dir") or "~/Downloads")
+
+
+def _config_int(config: dict, key: str, default: int, validator) -> int:
+    try:
+        return validator(str(config.get(key, default)))
+    except argparse.ArgumentTypeError:
+        return default
 
 
 # ─── login ────────────────────────────────────────────────────────────────────
@@ -212,8 +254,8 @@ def _process_track(filepath: Path, video_title: str, args) -> bool:
             console.print("  📝 [dim]No lyrics found[/]")
 
     # 5. Write ID3 tags
-    if not args.no_tag:
-        apply_metadata(filepath, meta)
+    if not args.no_tag and not apply_metadata(filepath, meta):
+        console.print("  🏷️  [yellow]Could not write metadata tags[/]")
 
     # 6. Cover art
     if not args.no_art and meta.musicbrainz_release_id:
@@ -227,15 +269,15 @@ def _process_track(filepath: Path, video_title: str, args) -> bool:
 
     # 7. Smart rename
     if not args.no_rename and meta.artist and meta.title:
-        new_name = format_filename(meta.artist, meta.title)
+        new_name = format_filename(meta.artist, meta.title, filepath.suffix.lstrip(".") or "mp3")
         new_path = filepath.parent / new_name
         if new_path != filepath:
             if new_path.exists():
                 stem = new_path.stem
-                new_path = filepath.parent / f"{stem} (1).mp3"
+                new_path = filepath.parent / f"{stem} (1){filepath.suffix}"
             filepath.rename(new_path)
             filepath = new_path
-            console.print(f"  📝 Renamed → [cyan]{new_name}[/]")
+            console.print(f"  📝 Renamed → [cyan]{new_path.name}[/]")
 
     # 8. Soulseek upgrade
     if args.soulseek:
@@ -287,7 +329,7 @@ def cmd_download(args):
         padding=(0, 2),
     ))
 
-    is_playlist = "list=" in url
+    is_playlist = _is_playlist_url(url)
 
     if is_playlist:
         console.print(f"  📂 [bold]Playlist detected[/]")
@@ -343,6 +385,7 @@ def cmd_search(args):
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main():
+    config = load_config()
     parser = argparse.ArgumentParser(
         prog="youtune",
         description="🎵 The smartest YouTube → MP3 downloader — auto-tag, album art, lyrics, Soulseek upgrades",
@@ -371,10 +414,10 @@ examples:
     # ── download ──
     dl = sub.add_parser("download", help="Download & tag a YouTube URL")
     dl.add_argument("url", help="YouTube video or playlist URL")
-    dl.add_argument("-o", "--output", default="~/Downloads", help="Output directory (default: ~/Downloads)")
-    dl.add_argument("-q", "--quality", type=int, default=0, help="Audio quality 0 (best) – 9 (worst)")
-    dl.add_argument("--normalize", action="store_true", help="Apply EBU R128 loudness normalization")
-    dl.add_argument("--lyrics", action="store_true", help="Fetch & embed lyrics")
+    dl.add_argument("-o", "--output", default=_default_output(config), help="Output directory (default: config or ~/Downloads)")
+    dl.add_argument("-q", "--quality", type=_quality, default=_config_int(config, "quality", 0, _quality), help="Audio quality 0 (best) – 9 (worst)")
+    dl.add_argument("--normalize", action="store_true", default=bool(config.get("normalize", False)), help="Apply EBU R128 loudness normalization")
+    dl.add_argument("--lyrics", action="store_true", default=bool(config.get("lyrics", False)), help="Fetch & embed lyrics")
     dl.add_argument("--no-tag", action="store_true", help="Skip MusicBrainz tagging")
     dl.add_argument("--no-art", action="store_true", help="Skip cover art")
     dl.add_argument("--no-rename", action="store_true", help="Keep original filename")
@@ -383,8 +426,8 @@ examples:
     g.add_argument("--soulseek", action="store_true", help="Search Soulseek for better quality")
     g.add_argument("--soulseek-user", help="Soulseek username (or run: youtune login)")
     g.add_argument("--soulseek-pass", help="Soulseek password (or run: youtune login)")
-    g.add_argument("--prefer-flac", action="store_true", default=True, help="Prefer FLAC from Soulseek")
-    g.add_argument("--min-bitrate", type=int, default=256, help="Min Soulseek bitrate (default: 256)")
+    g.add_argument("--prefer-flac", action="store_true", default=bool(config.get("prefer_flac", True)), help="Prefer FLAC from Soulseek")
+    g.add_argument("--min-bitrate", type=_min_bitrate, default=_config_int(config, "min_bitrate", 256, _min_bitrate), help="Min Soulseek bitrate (default: 256)")
     g.add_argument("--keep-youtube", action="store_true", help="Keep YouTube file on Soulseek upgrade")
 
     # ── search ──
@@ -395,8 +438,9 @@ examples:
     # Detect bare URL before argparse rejects it as an invalid subcommand
     # If first arg looks like a URL and isn't a known subcommand, inject "download"
     known_commands = {"login", "status", "download", "search"}
-    if len(sys.argv) > 1 and sys.argv[1] not in known_commands and not sys.argv[1].startswith("-"):
-        sys.argv.insert(1, "download")
+    first_positional = next((arg for arg in sys.argv[1:] if not arg.startswith("-")), None)
+    if first_positional and first_positional not in known_commands and _looks_like_url(first_positional):
+        sys.argv.insert(sys.argv.index(first_positional), "download")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)

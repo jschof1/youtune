@@ -7,6 +7,7 @@ from typing import Optional
 import musicbrainzngs
 import requests
 
+from . import __version__
 from .parser import ParsedTitle
 
 log = logging.getLogger(__name__)
@@ -17,7 +18,7 @@ _initialized = False
 def _init_mb():
     global _initialized
     if not _initialized:
-        musicbrainzngs.set_useragent("youtune", "1.0.0", "https://github.com/jschof1/youtune")
+        musicbrainzngs.set_useragent("youtune", __version__, "https://github.com/jschof1/youtune")
         _initialized = True
 
 

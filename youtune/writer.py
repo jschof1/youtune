@@ -2,7 +2,6 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 from mutagen.id3 import (
     APIC, ID3, ID3NoHeaderError, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TRCK, USLT,
@@ -25,11 +24,15 @@ def apply_metadata(filepath: Path, meta: TrackMetadata) -> bool:
     try:
         tags = audio.tags
         if tags is None:
-            tags = ID3()
-            audio.tags = tags
+            audio.add_tags()
+            tags = audio.tags
     except ID3NoHeaderError:
+        audio.add_tags()
+        tags = audio.tags
+
+    if tags is None:
         tags = ID3()
-        audio.add(tags)
+        audio.tags = tags
 
     written = False
 
@@ -63,6 +66,10 @@ def embed_cover_art(filepath: Path, image_data: bytes) -> bool:
     try:
         audio = MP3(str(filepath))
         tags = audio.tags
+        if tags is None:
+            audio.add_tags()
+            tags = audio.tags
+
         if tags is None:
             tags = ID3()
             audio.tags = tags

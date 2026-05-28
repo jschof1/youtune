@@ -7,6 +7,8 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+YTDLP_TIMEOUT_SECONDS = 60 * 60
+
 
 def _require(cmd: str) -> str:
     path = shutil.which(cmd)
@@ -17,6 +19,31 @@ def _require(cmd: str) -> str:
         }
         raise FileNotFoundError(f"{cmd} not found. Install: {install.get(cmd, '')}")
     return path
+
+
+def _run_ytdlp(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=YTDLP_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("yt-dlp timed out after 60 minutes") from exc
+
+
+def _existing_downloaded_files(stdout: str) -> list[Path]:
+    files = []
+    for line in stdout.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        if path.exists() and path.is_file():
+            files.append(path)
+    return files
 
 
 def download(
@@ -50,13 +77,16 @@ def download(
         cmd.extend(["--postprocessor-args", "-af loudnorm=I=-14:TP=-1.5:LRA=11"])
 
     log.info("Downloading: %s", url)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = _run_ytdlp(cmd)
 
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()}")
+        message = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RuntimeError(f"yt-dlp failed: {message}")
 
-    filepath = Path(result.stdout.strip())
-    if not filepath.exists():
+    downloaded = _existing_downloaded_files(result.stdout)
+    if downloaded:
+        filepath = downloaded[-1]
+    else:
         mp3s = sorted(output_dir.glob("*.mp3"), key=lambda p: p.stat().st_mtime, reverse=True)
         if mp3s:
             filepath = mp3s[0]
@@ -96,16 +126,16 @@ def download_playlist(
         cmd.extend(["--postprocessor-args", "-af loudnorm=I=-14:TP=-1.5:LRA=11"])
 
     log.info("Downloading playlist: %s", url)
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = _run_ytdlp(cmd)
 
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp failed: {result.stderr.strip()}")
+        message = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RuntimeError(f"yt-dlp failed: {message}")
 
-    tracks = []
-    for line in result.stdout.strip().splitlines():
-        fp = Path(line.strip())
-        if fp.exists():
-            tracks.append((fp, fp.stem))
+    tracks = [(fp, fp.stem) for fp in _existing_downloaded_files(result.stdout)]
+
+    if not tracks:
+        raise FileNotFoundError("No playlist tracks were downloaded")
 
     log.info("Downloaded %d tracks", len(tracks))
     return tracks
