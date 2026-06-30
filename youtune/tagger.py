@@ -78,7 +78,26 @@ def search_recording(parsed: ParsedTitle) -> Optional[TrackMetadata]:
     if not recordings:
         return None
 
-    rec = recordings[0]
+    # Prefer recordings with real official releases (not karaoke/tribute bootlegs
+    # marked as "Official" in MusicBrainz).
+    _NON_ARTIST_KEYWORDS = ["karaoke", "party tyme", "tribute", "tributo"]
+    def _is_real_official_release(rel):
+        status = rel.get("status", "")
+        title = rel.get("title", "").lower()
+        return status == "Official" and not any(
+            kw in title for kw in _NON_ARTIST_KEYWORDS
+        )
+    def _has_real_official(rec):
+        return any(
+            _is_real_official_release(r)
+            for r in rec.get("release-list", [])
+        )
+    # Try recordings with real official releases first, then any official, then anything
+    for pred in [_has_real_official, lambda r: any(r2.get("status") == "Official" for r2 in r.get("release-list", [])), lambda r: True]:
+        candidates = [r for r in recordings if pred(r)]
+        if candidates:
+            rec = candidates[0]
+            break
     meta.title = rec.get("title", parsed.title)
     meta.musicbrainz_recording_id = rec.get("id", "")
 
@@ -90,10 +109,11 @@ def search_recording(parsed: ParsedTitle) -> Optional[TrackMetadata]:
             artist_credit[0].get("artist", {}).get("id", "")
         )
 
-    # Release / album info
+    # Release / album info — prefer official releases over bootlegs/live
     releases = rec.get("release-list", [])
     if releases:
-        rel = releases[0]
+        official = [r for r in releases if r.get("status", "") == "Official"]
+        rel = official[0] if official else releases[0]
         meta.album = rel.get("title", "")
         meta.musicbrainz_release_id = rel.get("id", "")
         date = rel.get("date", "")

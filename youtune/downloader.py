@@ -73,9 +73,6 @@ def download(
         "--print", "after_move:filepath",
         "-o", str(output_dir / "%(title)s.%(ext)s"),
     ]
-    if normalize:
-        cmd.extend(["--postprocessor-args", "-af loudnorm=I=-14:TP=-1.5:LRA=11"])
-
     log.info("Downloading: %s", url)
     result = _run_ytdlp(cmd)
 
@@ -92,6 +89,23 @@ def download(
             filepath = mp3s[0]
         else:
             raise FileNotFoundError("Downloaded MP3 not found")
+
+    # Apply loudness normalization via ffmpeg (more reliable than yt-dlp postprocessor)
+    if normalize:
+        tmp = filepath.parent / f".{filepath.stem}.norm.mp3"
+        ff_cmd = [
+            "ffmpeg", "-y", "-i", str(filepath),
+            "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+            "-ar", "44100",
+            str(tmp),
+        ]
+        ff_result = subprocess.run(ff_cmd, capture_output=True, text=True)
+        if ff_result.returncode == 0 and tmp.exists():
+            tmp.replace(filepath)
+            log.info("Loudness normalized: %s", filepath.name)
+        else:
+            tmp.unlink(missing_ok=True)
+            log.warning("Loudness normalization failed, keeping original")
 
     log.info("Downloaded: %s", filepath.name)
     return filepath, filepath.stem
@@ -122,9 +136,6 @@ def download_playlist(
         "--print", "after_move:filepath",
         "-o", str(output_dir / "%(title)s.%(ext)s"),
     ]
-    if normalize:
-        cmd.extend(["--postprocessor-args", "-af loudnorm=I=-14:TP=-1.5:LRA=11"])
-
     log.info("Downloading playlist: %s", url)
     result = _run_ytdlp(cmd)
 
@@ -136,6 +147,26 @@ def download_playlist(
 
     if not tracks:
         raise FileNotFoundError("No playlist tracks were downloaded")
+
+    # Apply loudness normalization via ffmpeg (more reliable than yt-dlp postprocessor)
+    if normalize:
+        for filepath, _title in tracks:
+            if not filepath.exists():
+                continue
+            tmp = filepath.parent / f".{filepath.stem}.norm.mp3"
+            ff_cmd = [
+                "ffmpeg", "-y", "-i", str(filepath),
+                "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+                "-ar", "44100",
+                str(tmp),
+            ]
+            ff_result = subprocess.run(ff_cmd, capture_output=True, text=True)
+            if ff_result.returncode == 0 and tmp.exists():
+                tmp.replace(filepath)
+                log.info("Loudness normalized: %s", filepath.name)
+            else:
+                tmp.unlink(missing_ok=True)
+                log.warning("Loudness normalization failed for %s, keeping original", filepath.name)
 
     log.info("Downloaded %d tracks", len(tracks))
     return tracks

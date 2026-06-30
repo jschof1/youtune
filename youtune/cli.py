@@ -155,7 +155,7 @@ def cmd_status(args):
 
     config = load_config()
 
-    table = Table(show_header=True, header_style="bold cyan", grid=True)
+    table = Table.grid(padding=(0, 1))
     table.add_column("Setting")
     table.add_column("Value")
 
@@ -438,9 +438,16 @@ examples:
     # Detect bare URL before argparse rejects it as an invalid subcommand
     # If first arg looks like a URL and isn't a known subcommand, inject "download"
     known_commands = {"login", "status", "download", "search"}
-    first_positional = next((arg for arg in sys.argv[1:] if not arg.startswith("-")), None)
-    if first_positional and first_positional not in known_commands and _looks_like_url(first_positional):
-        sys.argv.insert(sys.argv.index(first_positional), "download")
+    # Find the first positional (non-flag) argument that's not a known subcommand
+    first_positional = None
+    for i, arg in enumerate(sys.argv[1:], start=1):
+        if not arg.startswith("-"):
+            if arg not in known_commands:
+                first_positional = arg
+                break
+    if first_positional and _looks_like_url(first_positional):
+        # Inject "download" as the first positional so flags land on the download subparser
+        sys.argv.insert(1, "download")
 
     args = parser.parse_args()
     _setup_logging(args.verbose)
