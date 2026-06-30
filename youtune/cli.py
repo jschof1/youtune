@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+import shutil
 import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -16,7 +17,7 @@ from . import __version__
 from .config import load_config, save_config, CONFIG_FILE
 from .downloader import download, download_playlist
 from .parser import parse_title
-from .soulseek import soulseek_upgrade, test_soulseek_login
+from .soulseek import soulseek_upgrade, test_soulseek_login, has_sockseek
 from .tagger import TrackMetadata, search_recording, fetch_cover_art, fetch_lyrics
 from .utils import format_filename
 from .writer import apply_metadata, embed_cover_art
@@ -181,6 +182,12 @@ def cmd_status(args):
 
     # Test Soulseek connection if we have creds
     if slsk_user and config.get("soulseek_pass"):
+        # Show backend
+        if has_sockseek():
+            console.print(f"  🔧 Backend: [green]sockseek[/] [dim](smart matching, length verification, retries)[/]")
+        else:
+            console.print(f"  🔧 Backend: [yellow]native[/] [dim](basic — run [bold]youtune install-sockseek[/] for better matching)[/]")
+
         console.print()
         with console.status("[bold green]Testing Soulseek connection..."):
             ok, msg = test_soulseek_login(slsk_user, config["soulseek_pass"])
@@ -382,6 +389,93 @@ def cmd_search(args):
             console.print("\n[yellow]No MusicBrainz match found.[/]")
 
 
+# ─── install-sockseek ────────────────────────────────────────────────────────
+
+def cmd_install_sockseek(args):
+    """Download and install the sockseek binary."""
+    import platform
+
+    console.print()
+    console.print(Panel(
+        "[bold]Install sockseek[/]\n[dim]Battle-tested Soulseek downloader with smart matching[/]",
+        border_style="bright_blue",
+        padding=(0, 2),
+    ))
+    console.print()
+
+    if has_sockseek():
+        console.print("  ✅ [green]sockseek is already installed![/]")
+        console.print()
+        return
+
+    # Detect platform
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+
+    if system == "darwin":
+        if machine in ("arm64", "aarch64"):
+            asset = "sockseek_osx-arm64.tar.gz"
+        else:
+            asset = "sockseek_osx-x64.tar.gz"
+    elif system == "linux":
+        if machine in ("aarch64", "arm64"):
+            asset = "sockseek_linux-arm.tar.gz"
+        else:
+            asset = "sockseek_linux-x64.tar.gz"
+    else:
+        console.print(f"  [red]Unsupported platform: {system} {machine}[/]")
+        console.print("  [dim]sockseek provides binaries for macOS and Linux.[/]")
+        console.print("  [dim]See https://github.com/fiso64/sockseek/releases[/]")
+        sys.exit(1)
+
+    console.print(f"  Platform: [cyan]{system}[/] / [cyan]{machine}[/] → [bold]{asset}[/]")
+    console.print()
+
+    # Download
+    import tempfile
+    import tarfile
+    import urllib.request
+
+    url = f"https://github.com/fiso64/sockseek/releases/download/v3.0.1/{asset}"
+    install_dir = Path.home() / ".local" / "bin"
+    install_dir.mkdir(parents=True, exist_ok=True)
+
+    with console.status(f"[bold green]Downloading {asset}..."):
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False)
+            urllib.request.urlretrieve(url, tmp.name)
+        except Exception as e:
+            console.print(f"  [red]Download failed:[/] {e}")
+            sys.exit(1)
+
+    with console.status("[bold green]Extracting..."):
+        try:
+            with tarfile.open(tmp.name) as tf:
+                tf.extract("sockseek", path=str(install_dir))
+            Path(tmp.name).unlink()
+        except Exception as e:
+            console.print(f"  [red]Extraction failed:[/] {e}")
+            Path(tmp.name).unlink(missing_ok=True)
+            sys.exit(1)
+
+    sockseek_path = install_dir / "sockseek"
+    sockseek_path.chmod(0o755)
+
+    console.print(f"  ✅ [green]Installed to:[/] {sockseek_path}")
+    console.print()
+
+    # Check if it's on PATH
+    if shutil.which("sockseek"):
+        console.print("  ✅ [green]sockseek is on your PATH![/]")
+    else:
+        console.print(f"  ⚠️  [yellow]Add to your PATH:[/] export PATH=\"{install_dir}:$PATH\"")
+        console.print(f"  [dim]Or move it:[/] mv {sockseek_path} /usr/local/bin/")
+
+    console.print()
+    console.print("  [dim]Now youtune will use sockseek for Soulseek upgrades automatically.[/]")
+    console.print()
+
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -435,9 +529,12 @@ examples:
     sr.add_argument("title", help='Video title (e.g. "Rick Astley - Never Gonna Give You Up")')
     sr.add_argument("--no-tag", action="store_true")
 
+    # ── install-sockseek ──
+    sub.add_parser("install-sockseek", help="Download and install the sockseek binary for better Soulseek matching")
+
     # Detect bare URL before argparse rejects it as an invalid subcommand
     # If first arg looks like a URL and isn't a known subcommand, inject "download"
-    known_commands = {"login", "status", "download", "search"}
+    known_commands = {"login", "status", "download", "search", "install-sockseek"}
     # Find the first positional (non-flag) argument that's not a known subcommand
     first_positional = None
     for i, arg in enumerate(sys.argv[1:], start=1):
@@ -465,6 +562,8 @@ examples:
             cmd_download(args)
         elif args.command == "search":
             cmd_search(args)
+        elif args.command == "install-sockseek":
+            cmd_install_sockseek(args)
     except FileNotFoundError as e:
         console.print(f"\n[bold red]Error:[/] {e}")
         sys.exit(1)
